@@ -197,8 +197,9 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+PREFIX = "yapi"
 # Create router for yc
-yc_router = APIRouter(prefix="/yapi")
+yc_router = APIRouter(prefix=f"/{PREFIX}")
 
 
 @app.exception_handler(404)
@@ -222,7 +223,7 @@ async def robots():
 
 
 # Mount secret_app to the router
-yc_router.mount(f"/{URL_SECRET}", secret_app)
+app.mount(f"/{PREFIX}/{URL_SECRET}", secret_app)
 
 # Include router in main app
 app.include_router(yc_router)
