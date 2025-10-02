@@ -1,0 +1,7 @@
+cryptography
+fastapi
+uvicorn
+python-multipart
+requests
+pyjwt
+python-dateutil
