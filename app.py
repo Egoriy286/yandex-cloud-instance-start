@@ -2,72 +2,72 @@ from contextlib import asynccontextmanager
 import logging
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import APIRouter, FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.background import BackgroundTasks
 import uvicorn
 import asyncio
 from datetime import datetime
-
 from services import YandexComputeService
 from config import settings
 
-URL_SECRET = settings.URL_SECRET  
+URL_SECRET = settings.URL_SECRET
 
-# Handler для ежедневного ротации файла
+# Handler для ежедневной ротации файла
 file_handler = TimedRotatingFileHandler(
-    'secret_app.log',          # базовое имя файла
-    when='midnight',    # ротация каждый день в полночь
-    interval=1,         # интервал = 1 день
-    backupCount=7       # сколько старых файлов хранить (например, 7 дней)
+    'secret_app.log',
+    when='midnight',
+    interval=1,
+    backupCount=7
 )
-file_handler.suffix = "%Y-%m-%d.log"  # формат даты в имени файла
-# Формат сообщений
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s  - %(message)s')
-file_handler.setFormatter(formatter)
+file_handler.suffix = "%Y-%m-%d.log"
 
+# Формат сообщений
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
+file_handler.setFormatter(formatter)
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(name)s  - %(message)s',
+    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
     handlers=[
         file_handler,
         logging.StreamHandler()
     ]
 )
-
 logger = logging.getLogger(__name__)
 
 # Server start time for uptime tracking
 SERVER_START_TIME = datetime.now()
 
+# Глобальная переменная для задачи
+background_task = None
+
+
 @asynccontextmanager
-async def lifespan(secret_app: FastAPI):
+async def lifespan(app_instance: FastAPI):
     """Lifespan handler to start background tasks if enabled."""
-    if True:
-        logger.info("Starting background auto-start task")
-        task = asyncio.create_task(auto_start_background_task())
-
+    global background_task
+    
+    logger.info("Starting background auto-start task")
+    background_task = asyncio.create_task(auto_start_background_task())
+    
     yield  # приложение запускается здесь
-
+    
     # Завершение фоновой задачи при остановке сервера
-    if task:
-        task.cancel()
+    if background_task:
+        background_task.cancel()
         try:
-            await task
+            await background_task
         except asyncio.CancelledError:
             logger.info("Background auto-start task stopped")
 
-# Initialize FastAPI secret_app
-app = FastAPI(
-    title="Yandex Compute API",
-    description="API for managing Yandex Cloud Compute instances",
-    version="1.0.0",
-    lifespan=lifespan
-)
 
+# Initialize services
+compute_service = YandexComputeService()
+
+# Create secret app first
 secret_app = FastAPI()
 
 # Mount static files
@@ -75,35 +75,18 @@ static_path = Path("static")
 static_path.mkdir(exist_ok=True)
 secret_app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Initialize service
-compute_service = YandexComputeService()
 
-@app.get("/", response_class=HTMLResponse)
-async def default_root():
-    """Просто возвращает заглушку default.html"""
+# Define routes for secret_app
+@secret_app.get("/", response_class=HTMLResponse)
+async def root():
+    """Serve the main dashboard HTML page."""
     try:
-        with open("static/default.html", "r", encoding="utf-8") as f:
+        with open("static/index.html", "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
-        return "<h1>Default Page</h1><p>Welcome! Use the secret URL.</p>"
-
-@app.exception_handler(404)
-async def custom_404_handler(request: Request, exc):
-    return FileResponse("static/404.html")
-
-@app.get("/robots.txt", response_class=PlainTextResponse)
-async def robots():
-    return "User-agent: *\nDisallow: /\n"
-
-@secret_app.get("/", response_class=HTMLResponse) 
-async def root(): 
-    """Serve the main dashboard HTML page.""" 
-    try: 
-        with open("static/index.html", "r", encoding="utf-8") as f: 
-            return f.read() 
-    except FileNotFoundError: 
-        logger.error("index.html not found in static directory") 
+        logger.error("index.html not found in static directory")
         return "<h1>Dashboard not found</h1><p>Please ensure static/index.html exists</p>"
+
 
 @secret_app.get("/api/instances")
 async def list_instances(page_size: int = 50, page_token: str = None):
@@ -196,16 +179,54 @@ async def trigger_auto_start():
 
 
 async def auto_start_background_task():
-    """Background task that runs every 5 minutes to auto-start stopped instances."""
+    """Background task that runs every minute to auto-start stopped instances."""
     while True:
         try:
-            await asyncio.sleep(60)  # 1 minutes
+            await asyncio.sleep(60)  # 1 minute
             logger.info("Running scheduled auto-start check")
             compute_service.auto_start_stopped_instances()
         except Exception as e:
             logger.error(f"Background auto-start failed: {e}")
 
-app.mount(f"/{URL_SECRET}", secret_app)
+
+# Create main app with lifespan
+app = FastAPI(
+    title="Yandex Compute API",
+    description="API for managing Yandex Cloud Compute instances",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+# Create router for yc
+yc_router = APIRouter(prefix="/yapi")
+
+
+@app.exception_handler(404)
+async def custom_404_handler(request: Request, exc):
+    return FileResponse("static/404.html")
+
+
+@yc_router.get("/", response_class=HTMLResponse)
+async def default_root():
+    """Просто возвращает заглушку default.html"""
+    try:
+        with open("static/default.html", "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "<h1>Default Page</h1><p>Welcome! Use the secret URL.</p>"
+
+
+@yc_router.get("/robots.txt", response_class=PlainTextResponse)
+async def robots():
+    return "User-agent: *\nDisallow: /\n"
+
+
+# Mount secret_app to the router
+yc_router.mount(f"/{URL_SECRET}", secret_app)
+
+# Include router in main app
+app.include_router(yc_router)
+
 
 if __name__ == "__main__":
     logger.info("Starting Yandex Compute API server...")
