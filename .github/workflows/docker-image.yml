@@ -1,0 +1,46 @@
+name: Deploy FastAPI yc-service
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  deploy-backend:
+    runs-on: ubuntu-latest
+    env:
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+      SERVER_USER: ${{ secrets.SERVER_USER }}
+      SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup SSH key
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ env.SERVER_SSH_KEY }}
+
+      - name: Copy source code to server
+        uses: appleboy/scp-action@v0.1.6
+        with:
+          host: ${{ env.SERVER_HOST }}
+          username: ${{ env.SERVER_USER }}
+          key: ${{ env.SERVER_SSH_KEY }}
+          port: 22
+          source: "."
+          target: "~/yandex-cloud-instance/"
+
+      - name: Build and deploy Docker container on server
+        run: |
+          ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_HOST << EOF
+            cd ~/yandex-cloud-instance
+            docker build -t yandex-cloud-instance .
+            if docker ps -a --format '{{.Names}}' | grep -Eq '^yandex-cloud-instance-container$'; then
+              docker stop yandex-cloud-instance-container
+              docker rm yandex-cloud-instance-container
+            fi
+            docker run -d --name yandex-cloud-instance-container -p 5777:5777 yandex-cloud-instance
+          EOF
